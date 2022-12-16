@@ -1,0 +1,1030 @@
+---
+title: "Analysis of human data"
+author: "Marieke Jones, PhD"
+date: '2022-11-02'
+output: 
+  html_document:
+    keep_md: true
+    toc: true
+    toc_depth: 2
+---
+
+# Set up
+Load libraries
+
+```{r, message=FALSE}
+library(tidyverse)
+library(purrr)
+library(stringr)
+library(readxl)
+library(lme4)
+library(lmerTest)
+library(modelr)
+library(zoo)
+library(ggeffects)
+library(emmeans)
+
+library(splines)
+```
+
+# Analysis Goals:
+
+1.  Is there a difference in length of the axon initial segment between AD and non-AD neurons? Is the length affected by the presence of tangles?
+
+2.  What does the TRIM46 fluorescence look like across the axon initial segment for AD v. non-AD neurons? Is the shape influenced by presence of tangles?
+
+3. Does mean AIS intensity at each distance differ between AD and non-AD neurons? Is the mean AIS intensity impacted by the presence of a tangle?
+
+4.  Is the maximum AIS intensity for each neuron different between AD and non-AD brains? Is the maximum AIS intensity affected by the presence of tangles?
+
+5.  Is the minimum AIS intensity for each neuron different between AD and non-AD brains? Is the minimum AIS intensity affected by the presence of tangles?
+
+6.  Within Alzheimer's brains, is there a difference in AIS length across severity of disease? 
+
+7. Within Alzheimer's brains, is there a difference in AIS intensity across severity of disease?
+  a. Splines
+  b. Mean
+  c. Max
+
+# Load and clean the data sets for each brain
+
+Each brain's data is stored in a separate file where the first column is the distance from the start of the axon initial segment and the other columns are the fluorescence intensity of TRIM46 (protein present in axon initial segment that is important for brain function) in a given neuron.
+
+Write a function that will read the file and clean it
+
+```{r, message=FALSE}
+readclean <- function(filename){
+  dat <- read_excel(paste0("Data/Human/5D - Mean Concentration _ 5E - AIS Length/", filename), skip = 1) %>%
+  dplyr::select(-avg, -std, -count, - `std rror`) %>%
+  mutate(filename = filename) %>%
+  pivot_longer(cols = contains("Neur"), names_to = "Neuron", values_to = "TRIM46_intensity")
+}
+
+```
+
+Create a list of all of the datafiles and then iterate through them to read them all in.
+
+```{r}
+my_files <- list.files(path = "Data/Human/5D - Mean Concentration _ 5E - AIS Length/")
+
+dfs <- map(my_files, ~readclean(.))
+alldat <- bind_rows(dfs)
+
+alldat
+```
+
+### Clean resulting dataset
+
+Create two new columns to denote Status and Brain
+
+```{r}
+alldat <- alldat %>%
+  separate(filename, into = c(NA, "filename"), sep = " - ") %>%
+  separate(filename, into = c("Status", "Brain"), sep = " = ") %>%
+  separate(Status, into = c("Status", NA), sep = " ") %>%
+  separate(Brain, into = c("Brain", NA), sep = "\\.")
+
+alldat
+```
+
+Rename Distance column
+
+```{r}
+alldat <- alldat %>%
+  rename(Dist = `Distance_(microns)`)
+```
+
+Remove rows where TRIM46 Intensity is missing since those neurons where not that long.
+
+```{r}
+alldat <- alldat %>%
+  arrange(Brain, Neuron, Dist) %>%
+  drop_na(TRIM46_intensity)
+```
+
+Create new column that designates whether or not Neuron has a tangle or tau accumulation
+
+```{r}
+alldat %>% count(Brain, Neuron) #1160 unique neurons
+alldat %>% count(Brain, Neuron) %>% arrange(-n)
+```
+
+Create new column that designates whether or not Neuron has a tangle or ta (tau accumulation)
+
+```{r}
+alldat <- alldat %>%
+  mutate(Tangle = case_when(str_detect(Neuron, "(tang)") ~ "tangle",
+                            str_detect(Neuron, "(ta)") ~ "ta",
+                            TRUE ~ "none"))
+
+alldat %>% count(Status, Tangle)
+```
+
+There are very few neurons from non-AD brains with a tangle.
+
+Set Non-AD Status to be first
+
+```{r}
+alldat <- alldat %>%
+  mutate(Status = factor(Status, levels = c("Non-AD", "AD")))
+
+alldat %>% count(Status)
+```
+
+# Question 1 - Length
+
+Is there a difference in length of the axon initial segment between AD and non-AD neurons? Is the length affected by the presence of tangles?
+
+>Note: Because of technical limitations, we don't know if we have examined the entire axon initial segment. However, the technical limitation was the same for AD and non-AD tissue, so it should be equally a problem across all tissue.
+
+Create dataset that is the maximum distance of each neuron aka the length
+
+```{r}
+maxdist <- alldat %>%
+  group_by(Brain, Neuron) %>%
+  filter(Dist == max(Dist)) %>%
+  ungroup()
+```
+
+Each neuron has one maximum distance (aka length) but each person has several maxima. Therefore, use linear mixed model to compare.
+
+Merci is excited to investigate the effect of Tangles on length of Axon Initial Segment in Alzheimer's so add in an interaction with Tangle.
+
+```{r}
+maxdistmod <- lmer(Dist ~ Status*Tangle + (1|Brain), data = maxdist)
+summary(maxdistmod)
+```
+
+This model output shows raw t-tests. Better to perform testing with Tukey correction for the number of tests performed.
+
+```{r}
+pairs(emmeans(maxdistmod, specs = "Tangle", by = "Status"))
+
+# see full p-value for AD, none - tangle
+pairs(emmeans(maxdistmod, specs = "Tangle", by = "Status")) %>%
+  as_tibble()
+```
+
+According to Tukey, AD neurons with tangles are 1.026 microns shorter than AD neurons with no tangle (p =  9.9e-5)
+
+Get pairwise comparisons within Tangle levels
+
+```{r}
+pairs(emmeans(maxdistmod, specs = "Status", by = "Tangle"))
+```
+
+According to Tukey pairwise comparisons, within neurons with a tangle, there is no difference in length between non-AD and AD (p =  0.892). AD with tangle are 0.104 microns shorter than non-AD
+
+## FIGURE: Length by status
+
+Each dot is the length for one neuron.
+
+On top of dots are the predicted means and 95% confidence interval from the linear mixed model.
+
+```{r}
+# return dataset of predicted mean +/- 95%CI
+pred_mean_lengthmod_status <- ggeffect(maxdistmod, terms = "Status") %>% 
+  as_tibble() %>%
+  rename(Status = x)
+
+pred_mean_lengthmod_status
+
+lengthplotstatus <- maxdist %>%
+  ggplot() +
+  geom_jitter(aes(x = Status, 
+                 y = Dist, 
+                 color = Status), 
+             alpha = .3,
+             width = .3) +
+  geom_point(data = pred_mean_lengthmod_status, 
+                aes(x = Status, 
+                    y = predicted, 
+                    color = Status),
+                size = 4) +
+  geom_errorbar(data = pred_mean_lengthmod_status, 
+                aes(x = Status, 
+                    ymin = conf.low, 
+                    ymax = conf.high, 
+                    color = Status),
+                width = .4,
+                lwd = 1) +
+  labs(y = "AIS Length  \n (Microns)", x = "") +
+  scale_color_manual(values =  c("darkblue", "darkorange2")) +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+lengthplotstatus
+
+#ggsave(lengthplotstatus, filename = "Figures/human_length_status.png", width = 6, height = 4)
+```
+
+## FIGURE: AIS Length by Status and Tangle
+
+Show jitter plus predicted mean and 95% CI with these colors.
+
+```{r}
+# return dataset of predicted mean +/- 95%CI
+pred_mean_lengthmod <- ggeffect(maxdistmod, terms = c("Status", "Tangle")) %>% 
+  as_tibble() %>%
+  rename(Status = x)
+
+pred_mean_lengthmod
+
+lengthplot <- maxdist %>%
+  ggplot() +
+  geom_point(aes(x = Status, 
+                 y = Dist, 
+                 color = Tangle),
+             position = position_jitterdodge(jitter.width = .2), 
+             alpha = .2) +
+  geom_point(data = pred_mean_lengthmod, 
+                aes(x = Status, 
+                    y = predicted, 
+                    color = group), 
+                position = position_dodge(width = .75),
+                size = 4) +
+  geom_errorbar(data = pred_mean_lengthmod, 
+                aes(x = Status, 
+                    ymin = conf.low, 
+                    ymax = conf.high, 
+                    color = group), 
+                position = position_dodge(width = .75),
+                width = .6,
+                lwd = 1) +
+  labs(y = "AIS Length \n (Microns)", x = "") +
+  scale_color_manual(values =  c("darkorchid", "darkcyan", "gold")) +
+  theme(legend.position = "none", 
+        axis.title = element_text(size= 16),
+        axis.text = element_text(size = 12))
+
+lengthplot
+
+#ggsave(lengthplot, filename = "Figures/human_length_status_tangle.png", width = 6, height = 4)
+```
+
+# Question 2 - Distribution of TRIM46 across distance
+
+What does the TRIM46 fluorescence look like across the axon initial segment for AD v. non-AD neurons? Is the shape influenced by presence of tangles?
+
+To show the shape of the TRIM46 intensity across distance, the raw data looked very messy. A rolling average across 3-distance observations works nicely to show the trend.
+
+I used the `rollapply()` function rather than the more standard `rollmean()` function because `rollmean()` has no way to remove NAs.
+
+```{r}
+alldat <- alldat %>%
+  group_by(Brain, Neuron) %>%
+  mutate(roll_Intensity = rollapply(TRIM46_intensity, 3, mean, na.rm = TRUE, fill = NA)) %>%
+  ungroup()
+```
+
+## FIGURE: Distance by Intensity for each brain
+
+One line per brain, rolling average averaged over all neurons at a given dist.
+
+The rolling average is the average of a 3-dist chunk.
+
+```{r}
+rollavgdat <- alldat %>%
+  group_by(Status, Brain, Dist) %>%
+  summarize(Mean_Intensity = mean(roll_Intensity, na.rm = TRUE),
+            sd_Intensity = sd(roll_Intensity, na.rm = TRUE),
+            n_neurons = n(),
+            se_Intensity = sd_Intensity/sqrt(n_neurons))
+
+
+lineplot <- rollavgdat %>%
+  ggplot(aes(Dist, Mean_Intensity)) +
+  geom_line(aes(group = Brain, color = Status)) +
+  geom_ribbon(aes(ymin = Mean_Intensity-se_Intensity, 
+                  ymax = Mean_Intensity+se_Intensity,
+                  group = Brain, fill = Status), alpha = .3) +
+  scale_fill_manual(values = c("darkblue", "darkorange2")) +
+  scale_color_manual(values = c("darkblue", "darkorange2")) +
+  labs(y = "Rolling Mean AIS Concentration", x = "AIS Length (Microns)") +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size =  12)) +
+  coord_cartesian(xlim = c(0, 7.5),
+                  ylim = c(125,300))
+
+lineplot
+
+#ggsave(lineplot, filename = "Figures/human_lineplot_distVintensity.png", width =  6, height = 4)
+```
+
+Splines are a way to fit a non-linear curve to data to understand how the relationship between Distance and Intensity changes for Alz v. Normal and based on tangle status.
+
+Try basic natural splines model with no interactions to just understand the splines portion of the model
+
+```{r}
+splinemod <- lmer(TRIM46_intensity ~ ns(Dist, df = 5) + Status + Tangle + (1|Brain), data = alldat)
+```
+
+Now try with interaction terms
+
+```{r}
+splinemod2 <- lmer(TRIM46_intensity ~ ns(Dist, df = 5)*Status + Status*Tangle + ns(Dist, df = 5)*Tangle + (1|Brain), data = alldat)
+```
+
+Compare splinemod1 and splinemod2
+
+```{r}
+anova(splinemod, splinemod2)
+```
+
+splinemod2 is better.
+
+Try to simplify the model by removing the interaction of tangle and dist
+
+```{r}
+splinemod3 <- lmer(TRIM46_intensity ~ ns(Dist, df = 5)*Status + Status*Tangle + (1|Brain), data = alldat)
+```
+
+See if there is a difference in model fit between splinemod3 and splinemod2
+
+```{r}
+anova(splinemod2, splinemod3)
+```
+
+splinemod2 fits better than splinemod3, so use that
+
+```{r}
+summary(splinemod2)
+```
+
+Interpretation:
+- At Dist=0, non-AD neurons have average Intensity of 162
+- Across Dist, Intensity is not linear
+- At Dist=0, AD neurons have Intensity 3.2 higher on average (p = ns)
+- Compared to neurons with no tangle in non-AD brains, neurons with ta in non-AD brains have intensity 12.5 lower (p = 2.13e-13)
+- Compared to neurons with no tangle in non-AD brains, neurons with tangle in non-AD brains have intensity 1.8 lower (p = ns)
+- There is a different shape for AD-ta and AD-tangle
+
+```{r, message=FALSE}
+pairs(emmeans(splinemod2, specs = "Status"))
+```
+
+For all neurons, on average, AD neurons have intensity 21.2 lower than non-AD (p = 0.082)
+
+See the difference between AD and non-AD for each level of tangle:
+
+```{r, message=FALSE}
+pairs(emmeans(splinemod2, specs = "Status", by = "Tangle"))
+```
+
+- Within neurons with no tangle, AD neurons have intensity 17.6 lower than non-AD (p = 0.145)
+- Within neurons with ta, AD neurons have intensity 30.2 lower than non-AD (p = 0.013)
+- Within neurons with tangle, AD neurons have intensity 15.7 lower than non-AD (p = 0.218)
+
+See the difference between tangle levels for each Status:
+
+```{r}
+pairs(emmeans(splinemod2, specs = "Tangle", by = "Status"))
+```
+
+- Within non-AD neurons:
+  - ta have intensity 3.3 higher than none (p = 0.096)
+  - tangles have intensity 27.97 lower than none (p < 0.0001)
+  - tangles have intensity 31.33 lower than ta (p < 0.0001)
+- Within AD neurons:
+  - ta have intensity 9.17 lower than none (p < 0.0001)
+  - tangles have intensity 26.07 lower than none (p < 0.0001)
+  - tangles have intensity 16.90 lower than ta (p < 0.0001)
+
+## FIGURE: Splines model plot
+
+```{r}
+splinesplot <- ggpredict(splinemod2, terms = c("Dist [all]", "Status", "Tangle")) %>% 
+  as_tibble() %>%
+  rename(Dist = x,
+         Status = group,
+         Tangle = facet) %>%
+  mutate(Tangle = factor(Tangle, levels = c("none", "ta", "tangle"))) %>%
+  ggplot(aes(Dist, predicted, color = Tangle, fill = Tangle)) +
+  facet_wrap(~Status, nrow = 2) +
+  geom_ribbon(aes(ymin = conf.low,
+                  ymax = conf.high), 
+              alpha = .3,
+              color = NA) +
+  geom_line(lwd = 1.25) +
+  scale_color_manual(values = c("darkorchid", "darkcyan", "gold")) +
+  scale_fill_manual(values = c("darkorchid", "darkcyan", "gold")) +
+  labs(x = "AIS Length (Microns)",
+       y = "Predicted AIS Concentration", color = "") +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12)) +
+  coord_cartesian(ylim = c(125,300), xlim = c(0, 7.5))
+
+splinesplot
+
+#ggsave(splinesplot, filename = "Figures/human_splines.png", width = 6, height = 4)
+```
+
+# Question 3 - Mean Intensity
+
+3. Does mean AIS intensity at each distance differ between AD and non-AD neurons? Is the mean AIS intensity impacted by the presence of a tangle?
+
+Create average intensity dataset. For each neuron, what is the average intensity across the whole distance that was measured
+
+```{r}
+avgint <- alldat %>%
+  group_by(Status, Brain, Neuron, Tangle) %>%
+  summarize(Mean_Intensity = mean(TRIM46_intensity),
+            n = n()) %>%
+  ungroup()
+
+avgint
+```
+
+Model the mean intensity by Status and Tangle
+
+```{r}
+avgintmodB <- lmer(Mean_Intensity ~ Status * Tangle + (1|Brain), data = avgint)
+
+summary(avgintmodB)
+```
+
+Ignoring tangle, what is the average difference in mean intensity between AD and non-AD?
+
+```{r}
+pairs(emmeans(avgintmodB, specs = "Status"))
+```
+
+No difference
+
+See pairwise comparisons within Status
+
+```{r}
+pairs(emmeans(avgintmodB, specs = "Tangle", by = "Status"))
+```
+
+Within neurons with AD, those with tangles have mean intensity 9.65 lower than those without (p = 0.038)
+
+See pairwise comparisons within Tangle level
+
+```{r}
+pairs(emmeans(avgintmodB, specs = "Status", by = "Tangle"))
+```
+
+Within neurons with Tangles, those from AD brains have mean Intensity 4.7 lower than those from non-AD brains (p = 0.783)
+
+## FIGURE: Mean Intensity by status
+
+Each dot is an average of all of the intensity values for each neuron.
+
+On top of dots are the predicted means and 95% confidence interval from the linear mixed model.
+
+```{r}
+# return dataset of predicted mean +/- 95%CI
+pred_mean_avgintmod <- ggeffect(avgintmodB, terms = c("Status")) %>% 
+  as_tibble() %>%
+  rename(Status = x)
+
+pred_mean_avgintmod
+
+meanint_supp_plot <- avgint %>%
+  ggplot() +
+  geom_jitter(aes(x = Status, 
+                 y = Mean_Intensity, 
+                 color = Status), 
+             alpha = .3,
+             width = .3) +
+  geom_point(data = pred_mean_avgintmod, 
+                aes(x = Status, 
+                    y = predicted, 
+                    color = Status),
+                size = 4) +
+  geom_errorbar(data = pred_mean_avgintmod, 
+                aes(x = Status, 
+                    ymin = conf.low, 
+                    ymax = conf.high, 
+                    color = Status),
+                width = .4,
+                lwd = 1) +
+  labs(y = "Mean AIS Concentration", x = "") +
+  scale_color_manual(values =  c("darkblue", "darkorange2")) +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+meanint_supp_plot
+
+#ggsave(meanint_supp_plot, filename = "Figures/human_meanintensity_status.png", width = 6, height = 4)
+```
+
+## FIGURE: Mean Intensity by Status and Tangle
+
+Each dot is an average of all of the intensity values for each neuron.
+
+Show jitter plus predicted mean and 95% CI with these colors.
+
+```{r}
+# return dataset of predicted mean +/- 95%CI
+pred_mean_avgintmod <- ggeffect(avgintmodB, terms = c("Status", "Tangle")) %>% 
+  as_tibble() %>%
+  rename(Status = x)
+
+pred_mean_avgintmod
+
+meanintplot <- avgint %>%
+  ggplot() +
+  geom_point(aes(x = Status, 
+                 y = Mean_Intensity, 
+                 color = Tangle),
+             position = position_jitterdodge(jitter.width = .2), 
+             alpha = .2) +
+  geom_point(data = pred_mean_avgintmod, 
+                aes(x = Status, 
+                    y = predicted, 
+                    color = group), 
+                position = position_dodge(width = 0.75),
+                size = 4) +
+  geom_errorbar(data = pred_mean_avgintmod, 
+                aes(x = Status, 
+                    ymin = conf.low, 
+                    ymax = conf.high,
+                    color = group), 
+                position = position_dodge(width = 0.75),
+                width = .6,
+                lwd = 1) +
+  labs(y = "Mean AIS Concentration", x= "") +
+  scale_color_manual(values =  c("darkorchid", "darkcyan", "gold")) +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+meanintplot
+
+#ggsave(meanintplot, filename = "Figures/human_meanintensity_status_tangle.png", width = 6, height = 4)
+```
+
+# Question 4 & 5 - Max and Min Intensity
+
+Create max and min intensity variables
+
+I tried the **raw** maximum and minimum intensities and determined that a smoothing function works better to establish the true max or min TRIM46 intensity across the distance of each neuron. 
+
+Therefore, I define the maximum and minimum intensity based on the rolling average Intensity for each neuron
+
+```{r}
+exint <- alldat %>%
+  group_by(Brain, Neuron) %>%
+  summarise(Max_intensity = max(roll_Intensity, na.rm = TRUE),
+            Min_intensity = min(roll_Intensity, na.rm = TRUE))
+```
+
+Join the max and min intensity onto the alldat
+
+```{r}
+alldat <- alldat %>%
+  left_join(exint, by = c("Brain", "Neuron"))
+```
+
+## Max intensity
+
+Create dataset of just the max value for each neuron.
+
+Check that each neuron only has one maximum
+
+```{r}
+alldat %>% 
+  filter(Max_intensity == roll_Intensity) %>%
+  count(Brain, Neuron) %>%
+  arrange(-n)
+```
+
+Hmm, one neuron has 2 maximums. Look at this neuron
+
+```{r}
+alldat %>%
+  filter(Brain == "A16-174" & Neuron == "Neuron 62 (ta)")
+```
+
+Just preserve one of these datapoints, so that this neuron does not count twice
+
+```{r}
+maxint <- alldat %>% 
+  filter(Max_intensity == roll_Intensity) %>%
+  filter(!(Brain == "A16-174" & Neuron == "Neuron 62 (ta)" & TRIM46_intensity == 372))
+
+maxint
+```
+
+Each person contributes several max_intensity values (one from  each neuron), so use linear mixed model
+
+```{r}
+maxmod <- lmer(Max_intensity ~ Status*Tangle + (1|Brain), data = maxint)
+summary(maxmod)
+```
+
+- Compared to non-AD neurons, AD neurons have max intensity 17 lower (not sig)
+
+Ignoring tangle, what is the average difference between AD and non-AD
+
+```{r}
+pairs(emmeans(maxmod, specs = "Status"))
+```
+
+See the pairwise differences within Status
+
+```{r}
+pairs(emmeans(maxmod, specs = "Tangle", by = "Status"))
+```
+
+Within AD neurons, those with a tangle have max intensity 19.7 lower than those without (p = 0.010)
+
+See the pairwise differences within Tangle level
+
+```{r}
+pairs(emmeans(maxmod, specs = "Status", by = "Tangle"))
+```
+
+Within neurons  with a tangle, those from AD brains have max intensity 2.7 lower than those from non-AD brains (p = ns)
+
+## FIGURE: Max intensity by status
+
+For each neuron, we calculated the maximum TRIM46 intensity value based on the 3-dist rolling average. Those maximum values are plotted here (each neuron contributes one datapoint)
+
+On top of dots are the predicted means and 95% confidence interval from the linear mixed model.
+
+```{r}
+# return dataset of predicted mean +/- 95%CI
+pred_mean_maxmod <- ggeffect(maxmod, terms = c("Status")) %>% 
+  as_tibble() %>%
+  rename(Status = x)
+
+pred_mean_maxmod
+
+maxint_supp_plot <- maxint %>%
+  ggplot() +
+  geom_jitter(aes(x = Status, 
+                 y = Max_intensity, 
+                 color = Status), 
+             alpha = .3,
+             width = .3) +
+  geom_point(data = pred_mean_maxmod, 
+                aes(x = Status, 
+                    y = predicted, 
+                    color = Status),
+                size = 4) +
+  geom_errorbar(data = pred_mean_maxmod, 
+                aes(x = Status, 
+                    ymin = conf.low, 
+                    ymax = conf.high, 
+                    color = Status),
+                width = .4,
+                lwd = 1) +
+  labs(y = "Maximum AIS Concentration", x = "") +
+  scale_color_manual(values =  c("darkblue", "darkorange2")) +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+maxint_supp_plot
+
+#ggsave(maxint_supp_plot, filename = "Figures/human_maxintensity_status.png", width = 6, height = 4)
+```
+
+## FIGURE: Max intensity by status and tangle
+
+For each neuron, we calculated the maximum TRIM46 intensity value based on the 3-dist rolling average. Those maximum values are plotted here (each neuron contributes one datapoint)
+
+On top of dots are the predicted means and 95% confidence interval from the linear mixed model.
+
+```{r}
+# return dataset of predicted mean +/- 95%CI
+pred_mean_maxmod <- ggeffect(maxmod, terms = c("Status", "Tangle")) %>% 
+  as_tibble() %>%
+  rename(Status = x)
+
+pred_mean_maxmod
+
+maxintplot <- maxint %>%
+  ggplot() +
+  geom_point(aes(x = Status, 
+                 y = Max_intensity, 
+                 color = Tangle),
+             position = position_jitterdodge(jitter.width = .2), 
+             alpha = .2) +
+  geom_point(data = pred_mean_maxmod, 
+                aes(x = Status, 
+                    y = predicted, 
+                    color = group), 
+                position = position_dodge(width = .75),
+                size = 4) +
+  geom_errorbar(data = pred_mean_maxmod, 
+                aes(x = Status, 
+                    ymin = conf.low, 
+                    ymax = conf.high, 
+                    color = group), 
+                position = position_dodge(width = .75),
+                width = .6,
+                lwd = 1) +
+  labs(y = "Maximum AIS Concentration", x = "") +
+  scale_color_manual(values =  c("darkorchid", "darkcyan", "gold")) +
+  theme(legend.position = "none",
+        axis.title = element_text(size =16),
+        axis.text = element_text(size = 12))
+
+maxintplot
+
+#ggsave(maxintplot, filename = "Figures/human_maxintensity_status_tangle.png", width = 6, height = 4)
+```
+
+## Min intensity
+
+Create dataset of just the min value for each neuron.
+
+Check that each neuron only has one minimum
+
+```{r}
+alldat %>% 
+  filter(Min_intensity == roll_Intensity) %>%
+  count(Brain, Neuron) %>%
+  arrange(-n)
+```
+
+Good
+
+```{r}
+minint <- alldat %>% 
+  filter(Min_intensity == roll_Intensity)
+```
+
+Each person contributes several min_intensity values, so use linear mixed model
+
+```{r}
+minintmod <- lmer(Min_intensity ~ Status*Tangle + (1|Brain), data = minint)
+summary(minintmod)
+```
+
+AD neurons have min intensity 6.3 lower than non-AD neurons (p = ns)
+
+Pairwise comparisons within Status
+
+```{r}
+pairs(emmeans(minintmod, specs = "Tangle", by = "Status"))
+```
+
+No differences
+
+Pairwise comparisons within Tangle levels
+
+```{r}
+pairs(emmeans(minintmod, specs = "Status", by = "Tangle"))
+```
+
+No differences
+
+## FIGURE: Min intensity by status
+
+For each neuron, we calculated the minimum TRIM46 intensity value based on the 3-dist rolling average. Those values are plotted here (each neuron contributes one datapoint)
+
+On top of dots are the predicted means and 95% confidence interval from the linear mixed model.
+
+```{r}
+# return dataset of predicted mean +/- 95%CI
+pred_mean_minmod <- ggeffect(minintmod, terms = c("Status")) %>% 
+  as_tibble() %>%
+  rename(Status = x)
+
+pred_mean_minmod
+
+minint_supp_plot <- minint %>%
+  ggplot() +
+  geom_jitter(aes(x = Status, 
+                 y = Min_intensity, 
+                 color = Status), 
+             alpha = .3,
+             width = .3) +
+  geom_point(data = pred_mean_minmod, 
+                aes(x = Status, 
+                    y = predicted, 
+                    color = Status),
+                size = 4) +
+  geom_errorbar(data = pred_mean_minmod, 
+                aes(x = Status, 
+                    ymin = conf.low, 
+                    ymax = conf.high, 
+                    color = Status),
+                width = .4,
+                lwd = 1) +
+  labs(y = "Minimum AIS Concentration", x = "") +
+  scale_color_manual(values =  c("darkblue", "darkorange2")) +
+  theme(legend.position = "none",
+        axis.title = element_text(size =16),
+        axis.text = element_text(size = 12))
+
+minint_supp_plot
+
+#ggsave(minint_supp_plot, filename = "Figures/human_minintensity_status.png", width = 6, height = 4)
+```
+
+## FIGURE: Min intensity by status and tangle
+
+For each neuron, we calculated the minimum TRIM46 intensity value based on the 3-dist rolling average. Those values are plotted here (each neuron contributes one datapoint)
+
+On top of dots are the predicted means and 95% confidence interval from the linear mixed model.
+
+```{r}
+# return dataset of predicted mean +/- 95%CI
+pred_mean_minmod <- ggeffect(minintmod, terms = c("Status", "Tangle")) %>% 
+  as_tibble() %>%
+  rename(Status = x)
+
+pred_mean_minmod
+
+minintplot <- minint %>%
+  ggplot() +
+  geom_point(aes(x = Status, 
+                 y = Min_intensity, 
+                 color = Tangle),
+             position = position_jitterdodge(jitter.width = .2), 
+             alpha = .2) +
+  geom_point(data = pred_mean_minmod, 
+                aes(x = Status, 
+                    y = predicted, 
+                    color = group), 
+                position = position_dodge(width = .75),
+                size = 4) +
+  geom_errorbar(data = pred_mean_minmod, 
+                aes(x = Status, 
+                    ymin = conf.low, 
+                    ymax = conf.high, 
+                    color = group), 
+                position = position_dodge(width = .75),
+                width = .6,
+                lwd = 1) +
+  labs(y = "Minimum AIS Intensity", x = "") +
+  scale_color_manual(values =  c("darkorchid", "darkcyan", "gold")) +
+  theme(legend.position = "none",
+        axis.title = element_text(size =16),
+        axis.text = element_text(size = 12))
+
+minintplot
+
+#ggsave(minintplot, filename = "Figures/human_minintensity_status_tangle.png", width = 6, height = 4)
+```
+
+#  Question 6 - AD only Length by severity of disease
+
+6.  Within Alzheimer's brains, is there a difference in AIS length across severity of disease? 
+
+First create dataset of AIS lengths for only the AD neurons
+```{r}
+ADlength <- maxdist %>%
+  filter(Status == "AD")
+```
+
+Then add a variable for disease severity:
+- least severe: AD 1 (A16-109), AD 3 (A15-217)
+- moderate severity: AD 2 (A15-93), AD 5 (A11-84), AD 7 (A15-167_)
+- most severe: AD 4 (A13-66), AD 6 (A16-214), AD 8 (A11-30)
+
+```{r}
+ADlength <- ADlength %>%
+  mutate(Stage = case_when(Brain == "A16-109" |
+                             Brain == "A15-217" ~ "Least Severe",
+                           Brain == "A15-93" |
+                             Brain == "A11-84" |
+                             Brain == "A15-167_" ~ "Moderate Severity",
+                           Brain == "A13-66" | 
+                             Brain == "A16-214" |
+                             Brain == "A11-30" ~ "Most Severe"))
+```
+
+Exploratory plots
+```{r}
+ADlength %>%
+  ggplot(aes(Stage, Dist)) +
+  geom_boxplot()
+
+# add tangle
+ADlength %>%
+  ggplot(aes(Stage, Dist, fill = Tangle)) +
+  geom_boxplot()
+```
+
+Model with Tangle
+```{r}
+adlengthmod <- lmer(Dist ~ Stage*Tangle + (1|Brain), data = ADlength)
+summary(adlengthmod)
+```
+
+No differences
+
+# Question 7 - AD only AIS intensity by severity
+
+7. Within Alzheimer's brains, is there a difference in AIS intensity across severity of disease?
+  a. Splines
+  b. Mean
+  c. Max
+  
+## Question 7a - Splines for intensity by severity
+
+First create a dataset of all the distances for only AD brains and then add the severity to the dataset.
+
+```{r}
+ADdat <- alldat %>%
+  filter(Status == "AD") %>%
+  mutate(Stage = case_when(Brain == "A16-109" |
+                             Brain == "A15-217" ~ "Least Severe",
+                           Brain == "A15-93" |
+                             Brain == "A11-84" |
+                             Brain == "A15-167_" ~ "Moderate Severity",
+                           Brain == "A13-66" | 
+                             Brain == "A16-214" |
+                             Brain == "A11-30" ~ "Most Severe"))
+```
+
+Plot
+
+One line per brain, rolling average averaged over all neurons at a given dist. Then color by Stage.
+
+The rolling average is the average of a 3-dist chunk.
+
+```{r}
+rollavgdat <- ADdat %>%
+  group_by(Brain, Stage, Dist) %>%
+  summarize(Mean_Intensity = mean(roll_Intensity, na.rm = TRUE),
+            sd_Intensity = sd(roll_Intensity, na.rm = TRUE),
+            n_neurons = n(),
+            se_Intensity = sd_Intensity/sqrt(n_neurons))
+
+lineplot <- rollavgdat %>%
+  ggplot(aes(Dist, Mean_Intensity)) +
+  geom_line(aes(group = Brain, color = Stage)) +
+  geom_ribbon(aes(ymin = Mean_Intensity-se_Intensity, 
+                  ymax = Mean_Intensity+se_Intensity,
+                  group = Brain, fill = Stage), alpha = .3) +
+  labs(y = "Rolling Mean AIS Concentration", x = "AIS Length (Microns)") +
+  theme(axis.title = element_text(size = 16),
+        axis.text = element_text(size =  12)) +
+  coord_cartesian(ylim = c(125,300))
+
+lineplot
+```
+
+No modeling needed because there does not seem to be a trend
+
+## Question 7b - Mean intensity by severity
+
+Start with avgint dataset from above. Filter for AD and add severity variable
+
+```{r}
+ADavg <- avgint %>%
+  filter(Status == "AD") %>%
+  mutate(Stage = case_when(Brain == "A16-109" |
+                             Brain == "A15-217" ~ "Least Severe",
+                           Brain == "A15-93" |
+                             Brain == "A11-84" |
+                             Brain == "A15-167_" ~ "Moderate Severity",
+                           Brain == "A13-66" | 
+                             Brain == "A16-214" |
+                             Brain == "A11-30" ~ "Most Severe"))
+```
+
+Exploratory plot
+```{r}
+ADavg %>%
+  ggplot(aes(Stage, Mean_Intensity)) +
+  geom_boxplot()
+
+# add tangle
+ADavg %>%
+  ggplot(aes(Stage, Mean_Intensity, fill = Tangle)) +
+  geom_boxplot()
+```
+
+## Question 7c - Max intensity by severity
+
+Start with maxint dataset from above. Filter for AD and add severity variable
+
+```{r}
+ADmax <- maxint %>%
+  filter(Status == "AD") %>%
+  mutate(Stage = case_when(Brain == "A16-109" |
+                             Brain == "A15-217" ~ "Least Severe",
+                           Brain == "A15-93" |
+                             Brain == "A11-84" |
+                             Brain == "A15-167_" ~ "Moderate Severity",
+                           Brain == "A13-66" | 
+                             Brain == "A16-214" |
+                             Brain == "A11-30" ~ "Most Severe"))
+```
+
+Exploratory plot
+```{r}
+ADmax %>%
+  ggplot(aes(Stage, Max_intensity)) +
+  geom_boxplot()
+
+# add tangle
+ADmax %>%
+  ggplot(aes(Stage, Max_intensity, fill = Tangle)) +
+  geom_boxplot()
+```
+
+No trend seen here either.
