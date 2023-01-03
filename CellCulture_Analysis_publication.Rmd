@@ -1,0 +1,2098 @@
+---
+title: "Analysis for Cell Culture Data"
+author: "Marieke Jones, PhD"
+date: "2022-11-02"
+output:   
+  pdf_document:
+    toc: true
+    toc_depth: 2
+---
+
+# Set up
+
+Load packages we need for analysis
+
+```{r, message=FALSE}
+library(tidyverse)
+library(readxl)
+library(lme4)
+library(lmerTest)
+library(emmeans)
+library(zoo)
+library(ggeffects)
+library(splines)
+```
+
+# Figure 1D
+
+MAPT+/+ (4 independent experiments)
+
+Is the Soma-AIS gap different between vehicle and xcTauOs
+
+## Load Data
+
+Write a function that will read the file and clean it
+
+```{r}
+readclean <- function(filename){
+  dat <- read_excel(paste0("Data/Mouse/1D - MAPT+-+ Soma-AIS Gap/", filename), skip = 1) %>%
+  dplyr::select(-avg, -std, -count, - `std rror`) %>%
+  mutate(filename = filename) %>%
+  pivot_longer(cols = contains("Neur"), names_to = "Neuron", values_to = "Gap")
+}
+```
+
+Create a list of all of the datafiles and then iterate through them to read them all in.
+
+```{r}
+my_files <- list.files(path = "Data/Mouse/1D - MAPT+-+ Soma-AIS Gap/")
+
+Fig1D <- map(my_files, ~readclean(.))
+Fig1D <- bind_rows(Fig1D)
+
+Fig1D
+```
+
+Create new variables for Mouse and Group
+
+```{r}
+Fig1D <- Fig1D %>%
+  select(-`Distance_(microns)`) %>%
+  separate(filename, into = c(NA, "Mouse"), sep = "\\+ ") %>%
+  separate(Mouse, into = c("Mouse", NA), sep = " = ")
+
+Fig1D
+```
+
+Create treatment group variable
+
+```{r}
+Fig1D <- Fig1D %>%
+  mutate(Group = if_else(str_detect(Mouse,"V"), "Vehicle", "xcTauOs")) %>%
+  select(Group, Mouse, Neuron, Gap)
+```
+
+Create Experiment variable
+
+Cells from embryos from one pregnant female were divided into vehicle and xcTauOs so we need to know which pregnant female the cells came from.
+
+```{r}
+Fig1D <- Fig1D %>%
+  mutate(Experiment = case_when(str_detect(Mouse,"1") ~ "A", 
+                                str_detect(Mouse,"2") ~ "B", 
+                                str_detect(Mouse,"3") ~ "C",
+                                str_detect(Mouse,"4") ~ "D"))
+
+Fig1D
+```
+
+### Basic data checks
+
+How many neurons per experiment & treatment
+
+```{r}
+Fig1D %>%
+  count(Mouse)
+```
+
+### Exploratory plot
+
+```{r}
+Fig1D %>%
+  ggplot(aes(Group, Gap)) +
+  geom_jitter() +
+  facet_wrap(~Experiment)
+```
+
+## Model
+
+Take into account which mouse the cells came from. Embryos from one pregnant mouse were homogenized then divided into Vehicle and xcTauOs, so our random effects are experiment and Mouse
+
+```{r}
+Fig1Dmod <- lmer(Gap ~ Group + (1|Experiment) + (1|Mouse), data = Fig1D)
+summary(Fig1Dmod)
+```
+
+xcTauOs is 0.3127 higher (SE = 0.96)
+
+No difference in Gap
+
+Because the fit was singular, we should check that the estimates are stable
+
+```{r}
+Fig1Dmod_check <- lmer(Gap ~ Group + (1|Experiment), data = Fig1D)
+summary(Fig1Dmod_check)
+```
+
+Estimates are stable, use the Fig1Dmod despite the singular fit
+
+## Plot
+
+Jitter with 95% CI (like human data)
+- vehicle = blue
+- tau = orange
+
+```{r}
+# return dataset of predicted mean +/- 95%CI
+pred_gap <- ggeffect(Fig1Dmod, terms = "Group") %>% 
+  as_tibble() %>%
+  rename(Group = x)
+
+pred_gap
+
+gapplot <- Fig1D %>%
+  ggplot() +
+  geom_jitter(aes(x = Group, 
+                 y = Gap, 
+                 color = Group), 
+             alpha = .3,
+             width = .3) +
+  geom_point(data = pred_gap, 
+                aes(x = Group, 
+                    y = predicted, 
+                    color = Group),
+                size = 4) +
+  geom_errorbar(data = pred_gap, 
+                aes(x = Group, 
+                    ymin = conf.low, 
+                    ymax = conf.high, 
+                    color = Group),
+                width = .4,
+                lwd = 1) +
+  labs(y = "Soma-AIS Gap \n (Microns)", x = "") +
+  scale_color_manual(values =  c("darkblue", "darkorange2")) +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+gapplot
+
+ggsave(gapplot, filename = "Figures/cell_1D.png", width = 6, height = 4)
+```
+
+# Figure 1E
+
+MAPT+/+ (4 independent experiments)
+
+Is the AIS concentration different between vehicle and xcTauOs
+
+## Load Data
+
+Write a function that will read the file and clean it
+
+```{r}
+readclean <- function(filename){
+  dat <- read_excel(paste0("Data/Mouse/1E - MAPT+-+ AIS Concentration/", filename), skip = 1) %>%
+  dplyr::select(-avg, -std, -count, - `std rror`) %>%
+  mutate(filename = filename) %>%
+  pivot_longer(cols = contains("Neur"), names_to = "Neuron", values_to = "Concentration")
+}
+```
+
+Create a list of all of the datafiles and then iterate through them to read them all in.
+
+```{r}
+my_files <- list.files(path = "Data/Mouse/1E - MAPT+-+ AIS Concentration/")
+
+Fig1E <- map(my_files, ~readclean(.))
+Fig1E <- bind_rows(Fig1E)
+
+Fig1E
+```
+
+Create new variables for Mouse and Group
+
+```{r}
+Fig1E <- Fig1E %>%
+  rename(Dist = `Distance_(microns)`) %>%
+  separate(filename, into = c(NA, "Mouse"), sep = "\\+ ") %>%
+  separate(Mouse, into = c("Mouse", NA), sep = " = ")
+
+Fig1E
+```
+
+Create treatment group variable
+
+```{r}
+Fig1E <- Fig1E %>%
+  mutate(Group = if_else(str_detect(Mouse,"V"), "Vehicle", "xcTauOs")) %>%
+  select(Group, Mouse, Neuron, Dist, Concentration)
+```
+
+Create Experiment variable
+
+Cells from embryos from one pregnant female were divided into vehicle and xcTauOs so we need to know which pregnant female the cells came from.
+
+```{r}
+Fig1E <- Fig1E %>%
+  mutate(Experiment = case_when(str_detect(Mouse,"1") ~ "A", 
+                                str_detect(Mouse,"2") ~ "B", 
+                                str_detect(Mouse,"3") ~ "C",
+                                str_detect(Mouse,"4") ~ "D"))
+
+Fig1E
+```
+
+### Clean dataset
+
+Drop observations where Concentration is missing because the neuron wasn't that long
+```{r}
+Fig1E <- Fig1E %>%
+  arrange(Group, Mouse, Neuron, Dist) %>%
+  drop_na(Concentration)
+```
+
+### Basic data checks
+
+How many neurons per experiment
+
+```{r}
+Fig1E %>%
+  count(Mouse)
+```
+
+### Exploratory plot
+
+- Make rolling average plot
+
+A rolling average across 3-distance observations works nicely to show the trend.
+
+I used the `rollapply()` function rather than the more standard `rollmean()` function because `rollmean()` has no way to remove NAs.
+
+```{r}
+Fig1E <- Fig1E %>%
+  group_by(Mouse, Neuron) %>%
+  mutate(roll_Conc = rollapply(Concentration, 3, mean, na.rm = TRUE, fill = NA)) %>%
+  ungroup()
+
+Fig1E
+```
+
+One line per mouse, rolling average averaged over all neurons at a given dist.
+
+The rolling average is the average of a 3-dist chunk.
+
+```{r}
+rollavgdat <- Fig1E %>%
+  group_by(Group, Mouse, Dist) %>%
+  summarize(Mean_Conc = mean(roll_Conc, na.rm = TRUE),
+            sd_Conc = sd(roll_Conc, na.rm = TRUE),
+            n_neurons = n(),
+            se_Conc = sd_Conc/sqrt(n_neurons))
+
+
+lineplot <- rollavgdat %>%
+  ggplot(aes(Dist, Mean_Conc)) +
+  geom_line(aes(group = Mouse, color = Group)) +
+  geom_ribbon(aes(ymin = Mean_Conc-se_Conc, 
+                  ymax = Mean_Conc+se_Conc,
+                  group = Mouse, fill = Group), alpha = .3) +
+  scale_fill_manual(values = c("darkblue", "darkorange2")) +
+  scale_color_manual(values = c("darkblue", "darkorange2")) +
+  labs(y = "Rolling Mean AIS Concentration", x = "AIS Length (Microns)") +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size =  12)) +
+  coord_cartesian(xlim =c(0, 32))
+
+lineplot
+
+ggsave(lineplot, filename = "Figures/cell_1E_distVintensity.png", width =  6, height = 4)
+```
+
+## Model splines
+
+Splines are a way to fit a non-linear curve to data to understand how the relationship between Distance and Concentration changes for xcTauOs v. Vehicle.
+
+Try basic natural splines model
+
+```{r}
+splinemod <- lmer(Concentration ~ ns(Dist, df = 5) + Group + (1|Mouse) + (1|Experiment), data = Fig1E)
+```
+
+Now try with interaction term
+
+```{r}
+splinemod2 <- lmer(Concentration ~ ns(Dist, df = 5) * Group + (1|Mouse) + (1|Experiment), data = Fig1E)
+```
+
+See if there is a difference in model fit between splinemod and splinemod2
+
+```{r}
+anova(splinemod2, splinemod)
+```
+
+splinemod2 fits better than splinemod, so use that
+
+Interpretation of splinemod2, use emmeans to find average difference
+
+```{r, message=FALSE}
+pairs(emmeans(splinemod2, specs = "Group"))
+```
+
+On average xcTauOs has AIS concentration 44.4 lower than vehicle (p < 0.0001)
+
+## Plot splines
+
+```{r}
+splinesplot <- ggpredict(splinemod2, terms = c("Dist [all]", "Group")) %>% 
+  as_tibble() %>%
+  rename(Dist = x,
+         Group = group) %>%
+  ggplot(aes(Dist, predicted, color = Group)) +
+  #facet_wrap(~Group, nrow = 2) +
+  geom_ribbon(aes(ymin = conf.low,
+                  ymax = conf.high,
+                  fill = Group), 
+              alpha = .3,
+              color = NA) +
+  geom_line(lwd = 1.25) +
+  scale_color_manual(values = c("darkblue", "darkorange2")) +
+  scale_fill_manual(values = c("darkblue", "darkorange2")) +
+  labs(x = "AIS Length (Microns)",
+       y = "Predicted AIS Concentration", color = "") +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12)) +
+  coord_cartesian(xlim = c(0,32))
+
+splinesplot
+
+ggsave(splinesplot, filename = "Figures/cell_1E_splines.png", width = 6, height = 4)
+```
+
+## Model mean concentration
+
+Create average intensity dataset. For each neuron, what is the average intensity across the whole distance that was measured
+
+```{r}
+avgint <- Fig1E %>%
+  group_by(Group, Experiment, Mouse, Neuron) %>%
+  summarize(Mean_Conc = mean(Concentration),
+            n = n()) %>%
+  ungroup()
+
+avgint
+```
+
+Model the mean concentration by Group
+
+```{r}
+avgintmodB <- lmer(Mean_Conc ~ Group + (1|Mouse) + (1|Experiment), data = avgint)
+
+summary(avgintmodB)
+```
+
+xcTauOs has average concentration 45.7 lower than Vehicle (p = 0.034)
+
+## Plot Mean Concentration
+
+Each dot is an average of all of the concentration values for each neuron.
+
+On top of dots are the predicted means and 95% confidence interval from the linear mixed model.
+
+```{r}
+# return dataset of predicted mean +/- 95%CI
+pred_mean_avgintmod <- ggeffect(avgintmodB, terms = c("Group")) %>% 
+  as_tibble() %>%
+  rename(Group = x)
+
+pred_mean_avgintmod
+
+meanint_supp_plot <- avgint %>%
+  ggplot() +
+  geom_jitter(aes(x = Group, 
+                 y = Mean_Conc, 
+                 color = Group), 
+             alpha = .3,
+             width = .3) +
+  geom_point(data = pred_mean_avgintmod, 
+                aes(x = Group, 
+                    y = predicted, 
+                    color = Group),
+                size = 4) +
+  geom_errorbar(data = pred_mean_avgintmod, 
+                aes(x = Group, 
+                    ymin = conf.low, 
+                    ymax = conf.high, 
+                    color = Group),
+                width = .4,
+                lwd = 1) +
+  labs(y = "Mean AIS Concentration", x = "") +
+  scale_color_manual(values =  c("darkblue", "darkorange2")) +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+meanint_supp_plot
+
+ggsave(meanint_supp_plot, filename = "Figures/cell_1E_meanconc.png", width = 6, height = 4)
+```
+
+## Model max concentration
+
+Create max concentration variable
+
+Define the maximum concentration based on the rolling average concentration for each neuron since that worked better for the human data.
+
+There is one Neuron (Neuron 30 for Mouse T3) that only has one measurement at Dist = 0, therefore, no rolling average concentration and no Max concentration. Remove.
+
+```{r}
+maxint <- Fig1E %>%
+  filter(!(Mouse == "xcTauOs 3" & Neuron == "Neuron 30")) %>%
+  group_by(Group, Experiment, Mouse, Neuron) %>%
+  summarise(Max_Conc = max(roll_Conc, na.rm = TRUE))
+```
+
+Check that each neuron only has one maximum
+
+```{r}
+maxint %>%
+  count(Mouse, Neuron) %>%
+  arrange(-n)
+```
+
+Model the max concentration by Group
+
+```{r}
+maxmod <- lmer(Max_Conc ~ Group + (1|Mouse) + (1|Experiment), data = maxint)
+
+summary(maxmod)
+```
+
+xcTauOs has maximum concentration 66.5 lower than Vehicle (p = 0.038)
+
+## Plot Max Concentration
+
+Each dot is the maximum concentration values for each neuron.
+
+On top of dots are the predicted means and 95% confidence interval from the linear mixed model.
+
+```{r}
+# return dataset of predicted mean +/- 95%CI
+pred_max <- ggeffect(maxmod, terms = c("Group")) %>% 
+  as_tibble() %>%
+  rename(Group = x)
+
+pred_max
+
+maxplot <- maxint %>%
+  ggplot() +
+  geom_jitter(aes(x = Group, 
+                 y = Max_Conc, 
+                 color = Group), 
+             alpha = .3,
+             width = .3) +
+  geom_point(data = pred_max, 
+                aes(x = Group, 
+                    y = predicted, 
+                    color = Group),
+                size = 4) +
+  geom_errorbar(data = pred_max, 
+                aes(x = Group, 
+                    ymin = conf.low, 
+                    ymax = conf.high, 
+                    color = Group),
+                width = .4,
+                lwd = 1) +
+  labs(y = "Maximum AIS Concentration", x = "") +
+  scale_color_manual(values =  c("darkblue", "darkorange2")) +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+maxplot
+
+ggsave(maxplot, filename = "Figures/cell_1E_maxconc.png", width = 6, height = 4)
+```
+
+## Model Min Concentration
+
+Create min concentration
+
+Define the minimum concentration based on the rolling average concentration for each neuron since that worked better for the human data.
+
+There is one Neuron (Neuron 30 for Mouse T3) that only has one measurement at Dist = 0, therefore, no rolling average concentration and no Max concentration. Remove.
+
+```{r}
+minint <- Fig1E %>%
+  filter(!(Mouse == "xcTauOs 3" & Neuron == "Neuron 30")) %>%
+  group_by(Group, Experiment, Mouse, Neuron) %>%
+  summarise(Min_Conc = min(roll_Conc, na.rm = TRUE))
+```
+
+Check that each neuron only has one maximum
+
+```{r}
+minint %>%
+  count(Mouse, Neuron) %>%
+  arrange(-n)
+```
+
+Model the min concentration by Group
+
+```{r}
+minmod <- lmer(Min_Conc ~ Group + (1|Mouse) + (1|Experiment), data = minint)
+
+summary(minmod)
+```
+
+xcTauOs is 25.677 (SE = 6.77) less than vehicle (p = 0.009)
+
+Check the minmod
+
+Because we received a note that the fit was singular, we should make sure that the estimates are stable. We will check the estimates by allowing the model to estimate the coefficients assuming we had 296 observations across the 4 females.
+
+```{r}
+minmod_check <- lmer(Min_Conc ~ Group + (1|Experiment), data = minint)
+
+summary(minmod_check)
+```
+
+xcTauOs is 27.28 less than vehicle (SE = 2.85)
+
+These estimates are close, so use the minmod
+
+## Plot Min Concentration
+
+Each dot is the minimum concentration value for each neuron.
+
+On top of dots are the predicted means and 95% confidence interval from the linear mixed model.
+
+```{r}
+# return dataset of predicted mean +/- 95%CI
+pred_min <- ggeffect(minmod, terms = c("Group")) %>% 
+  as_tibble() %>%
+  rename(Group = x)
+
+pred_min
+
+minplot <- minint %>%
+  ggplot() +
+  geom_jitter(aes(x = Group, 
+                 y = Min_Conc, 
+                 color = Group), 
+             alpha = .3,
+             width = .3) +
+  geom_point(data = pred_min, 
+                aes(x = Group, 
+                    y = predicted, 
+                    color = Group),
+                size = 4) +
+  geom_errorbar(data = pred_min, 
+                aes(x = Group, 
+                    ymin = conf.low, 
+                    ymax = conf.high, 
+                    color = Group),
+                width = .4,
+                lwd = 1) +
+  labs(y = "Minimum AIS Concentration", x = "") +
+  scale_color_manual(values =  c("darkblue", "darkorange2")) +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+minplot
+
+ggsave(minplot, filename = "Figures/cell_1E_minconc.png", width = 6, height = 4)
+```
+
+# Fig 1F
+
+MAPT+/+ (4 independent experiments)
+Is the AIS Length different between treatments?
+
+## Load Data
+
+Write a function that will read the file and clean it
+
+```{r}
+readclean <- function(filename){
+  dat <- read_excel(paste0("Data/Mouse/1F- MAPT+-+ AIS Length/", filename), skip = 1) %>%
+  dplyr::select(-avg, -std, -count, - `std rror`) %>%
+  mutate(filename = filename) %>%
+  pivot_longer(cols = contains("Neur"), names_to = "Neuron", values_to = "Length")
+}
+```
+
+Create a list of all of the datafiles and then iterate through them to read them all in.
+
+```{r}
+my_files <- list.files(path = "Data/Mouse/1F- MAPT+-+ AIS Length/")
+
+Fig1F <- map(my_files, ~readclean(.))
+Fig1F <- bind_rows(Fig1F)
+
+Fig1F
+```
+
+Create new variables for Mouse and Group
+
+```{r}
+Fig1F <- Fig1F %>%
+  select(-`Distance_(microns)`) %>%
+  separate(filename, into = c(NA, "Mouse"), sep = "\\+ ") %>%
+  separate(Mouse, into = c("Mouse", NA), sep = " = ")
+
+Fig1F
+```
+
+Create treatment group variable
+
+```{r}
+Fig1F <- Fig1F %>%
+  mutate(Group = if_else(str_detect(Mouse,"V"), "Vehicle", "xcTauOs")) %>%
+  select(Group, Mouse, Neuron, Length)
+```
+
+Create Experiment variable
+
+Cells from embryos from one pregnant female were divided into vehicle and xcTauOs so we need to know which pregnant female the cells came from.
+
+```{r}
+Fig1F <- Fig1F %>%
+  mutate(Experiment = case_when(str_detect(Mouse,"1") ~ "A", 
+                                str_detect(Mouse,"2") ~ "B", 
+                                str_detect(Mouse,"3") ~ "C",
+                                str_detect(Mouse,"4") ~ "D"))
+
+Fig1F
+```
+
+### Basic data checks
+
+How many neurons per experiment & treatment
+
+```{r}
+Fig1F %>%
+  count(Mouse)
+```
+
+## Exploratory Plot
+
+```{r}
+Fig1F %>%
+  ggplot(aes(Group, Length)) +
+  geom_jitter(height = 0) +
+  facet_wrap(~Experiment)
+```
+
+Calculate the average for each Mouse and then plot those - this is the method that Merci used in the paper
+
+```{r}
+Fig1F %>%
+  group_by(Experiment, Mouse, Group) %>%
+  summarize(mean = mean(Length)) %>%
+  ggplot(aes(Group, mean, color = Experiment)) +
+  geom_point(size = 2) +
+  geom_line(aes(group = Experiment))
+```
+
+The mean is being pulled by a high outlier in Experiment A and B Vehicle groups, so I am not sure the mean is a good indicator of the actual situation
+
+## Model
+
+```{r}
+Fig1Fmod <- lmer(Length ~ Group + (1|Mouse) + (1|Experiment), data = Fig1F)
+summary(Fig1Fmod)
+```
+
+No difference in Length (p = 0.07)
+
+## Plot
+
+Jitter with 95% CI (like human data)
+- vehicle = blue
+- tau = orange
+
+```{r}
+# return dataset of predicted mean +/- 95%CI
+pred_length <- ggeffect(Fig1Fmod, terms = "Group") %>% 
+  as_tibble() %>%
+  rename(Group = x)
+
+pred_length
+
+lengthplot <- Fig1F %>%
+  ggplot() +
+  geom_jitter(aes(x = Group, 
+                 y = Length, 
+                 color = Group), 
+             alpha = .3,
+             width = .3) +
+  geom_point(data = pred_length, 
+                aes(x = Group, 
+                    y = predicted, 
+                    color = Group),
+                size = 4) +
+  geom_errorbar(data = pred_length, 
+                aes(x = Group, 
+                    ymin = conf.low, 
+                    ymax = conf.high, 
+                    color = Group),
+                width = .4,
+                lwd = 1) +
+  labs(y = "AIS Length \n (Microns)", x = "") +
+  scale_color_manual(values =  c("darkblue", "darkorange2")) +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+lengthplot
+
+ggsave(lengthplot, filename = "Figures/cell_1F.png", width = 6, height = 4)
+```
+
+# Fig 2D
+
+MAPT-/- (5 independent experiments)
+
+Is the Soma-AIS gap different between vehicle and xcTauOs
+
+## Load Data
+
+Write a function that will read the file and clean it
+
+```{r}
+readclean <- function(filename){
+  dat <- read_excel(paste0("Data/Mouse/2D - MAPT--- Soma-AIS Gap/", filename), skip = 1) %>%
+  dplyr::select(-avg, -std, -count, - `std rror`) %>%
+  mutate(filename = filename) %>%
+  pivot_longer(cols = contains("Neur"), names_to = "Neuron", values_to = "Gap")
+}
+```
+
+Create a list of all of the datafiles and then iterate through them to read them all in.
+
+```{r}
+my_files <- list.files(path = "Data/Mouse/2D - MAPT--- Soma-AIS Gap/")
+
+Fig2D <- map(my_files, ~readclean(.))
+Fig2D <- bind_rows(Fig2D)
+
+Fig2D
+```
+
+Create new variables for Mouse and Group
+
+```{r}
+Fig2D <- Fig2D %>%
+  select(-`Distance_(microns)`) %>%
+  separate(filename, into = c(NA, "Mouse"), sep = "\\- ") %>%
+  separate(Mouse, into = c("Mouse", NA), sep = " = ")
+
+Fig2D
+```
+
+Create treatment group variable
+
+```{r}
+Fig2D <- Fig2D %>%
+  mutate(Group = if_else(str_detect(Mouse,"V"), "Vehicle", "xcTauOs")) %>%
+  select(Group, Mouse, Neuron, Gap)
+```
+
+Create Experiment variable
+
+Cells from embryos from one pregnant female were divided into vehicle and xcTauOs so we need to know which pregnant female the cells came from.
+
+```{r}
+Fig2D <- Fig2D %>%
+  mutate(Experiment = case_when(str_detect(Mouse,"1") ~ "A", 
+                                str_detect(Mouse,"2") ~ "B", 
+                                str_detect(Mouse,"3") ~ "C",
+                                str_detect(Mouse,"4") ~ "D",
+                                str_detect(Mouse,"5") ~ "E"))
+
+Fig2D
+```
+
+### Basic data checks
+
+How many neurons per experiment & treatment
+
+```{r}
+Fig2D %>%
+  count(Mouse)
+```
+
+### Exploratory plot
+
+```{r}
+Fig2D %>%
+  ggplot(aes(Group, Gap)) +
+  geom_jitter() +
+  facet_wrap(~Experiment)
+```
+
+## Model
+
+```{r}
+Fig2Dmod <- lmer(Gap ~ Group + (1|Mouse) + (1|Experiment), data = Fig2D)
+summary(Fig2Dmod)
+```
+
+xcTauOs is 0.5232 higher (SE = 0.7423) (p = 0.481)
+
+No difference in Gap
+
+Check the model by removing the random effect of Mouse
+
+```{r}
+Fig2Dmod_check <- lmer(Gap ~ Group + (1|Experiment), data = Fig2D)
+summary(Fig2Dmod_check)
+```
+
+Same estimates. Use the Fig2Dmod anyway
+
+## Plot
+
+Jitter with 95% CI (like human data)
+- vehicle = blue
+- tau = orange
+
+```{r}
+# return dataset of predicted mean +/- 95%CI
+pred_gap <- ggeffect(Fig2Dmod, terms = "Group") %>% 
+  as_tibble() %>%
+  rename(Group = x)
+
+pred_gap
+
+gapplot <- Fig2D %>%
+  ggplot() +
+  geom_jitter(aes(x = Group, 
+                 y = Gap, 
+                 color = Group), 
+             alpha = .3,
+             width = .3) +
+  geom_point(data = pred_gap, 
+                aes(x = Group, 
+                    y = predicted, 
+                    color = Group),
+                size = 4) +
+  geom_errorbar(data = pred_gap, 
+                aes(x = Group, 
+                    ymin = conf.low, 
+                    ymax = conf.high, 
+                    color = Group),
+                width = .4,
+                lwd = 1) +
+  labs(y = "Soma-AIS Gap \n (Microns)", x = "") +
+  scale_color_manual(values =  c("darkblue", "darkorange2")) +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+gapplot
+
+ggsave(gapplot, filename = "Figures/cell_2D.png", width = 6, height = 4)
+```
+
+# Fig 2E
+
+MAPT-/- (5 independent experiments)
+
+Is the AIS concentration different between vehicle and xcTauOs
+
+Write a function that will read the file and clean it
+
+```{r}
+readclean <- function(filename){
+  dat <- read_excel(paste0("Data/Mouse/2E - MAPT--- AIS Concentration/", filename), skip = 1) %>%
+  dplyr::select(-avg, -std, -count, - `std rror`) %>%
+  mutate(filename = filename) %>%
+  pivot_longer(cols = contains("Neur"), names_to = "Neuron", values_to = "Concentration")
+}
+```
+
+Create a list of all of the datafiles and then iterate through them to read them all in.
+
+```{r}
+my_files <- list.files(path = "Data/Mouse/2E - MAPT--- AIS Concentration/")
+
+Fig2E <- map(my_files, ~readclean(.))
+Fig2E <- bind_rows(Fig2E)
+
+Fig2E
+
+# drop empty columns
+Fig2E <- Fig2E %>% select(-contains("..."))
+```
+
+Create new variables for Mouse and Group
+
+```{r}
+Fig2E <- Fig2E %>%
+  rename(Dist = `Distance_(microns)`) %>%
+  separate(filename, into = c(NA, "Mouse"), sep = "\\- ") %>%
+  separate(Mouse, into = c("Mouse", NA), sep = " = ")
+
+Fig2E
+```
+
+Create treatment group variable
+
+```{r}
+Fig2E <- Fig2E %>%
+  mutate(Group = if_else(str_detect(Mouse,"V"), "Vehicle", "xcTauOs")) %>%
+  select(Group, Mouse, Neuron, Dist, Concentration)
+```
+
+Create Experiment variable
+
+Cells from embryos from one pregnant female were divided into vehicle and xcTauOs so we need to know which pregnant female the cells came from.
+
+```{r}
+Fig2E <- Fig2E %>%
+  mutate(Experiment = case_when(str_detect(Mouse,"1") ~ "A", 
+                                str_detect(Mouse,"2") ~ "B", 
+                                str_detect(Mouse,"3") ~ "C",
+                                str_detect(Mouse,"4") ~ "D",
+                                str_detect(Mouse,"5") ~ "E"))
+
+Fig2E
+```
+
+### Clean dataset
+
+Drop observations where Concentration is missing because the neuron wasn't that long
+```{r}
+Fig2E <- Fig2E %>%
+  arrange(Group, Experiment, Mouse, Neuron, Dist) %>%
+  drop_na(Concentration)
+```
+
+### Basic data checks
+
+How many neurons per experiment
+
+```{r}
+Fig2E %>%
+  count(Mouse)
+```
+
+### Exploratory plot
+
+- Make rolling average plot
+
+A rolling average across 3-distance observations works nicely to show the trend.
+
+I used the `rollapply()` function rather than the more standard `rollmean()` function because `rollmean()` has no way to remove NAs.
+
+```{r}
+Fig2E <- Fig2E %>%
+  group_by(Mouse, Neuron) %>%
+  mutate(roll_Conc = rollapply(Concentration, 3, mean, na.rm = TRUE, fill = NA)) %>%
+  ungroup()
+
+Fig2E
+```
+
+One line per mouse, rolling average averaged over all neurons at a given dist.
+
+The rolling average is the average of a 3-dist chunk.
+
+```{r}
+rollavgdat <- Fig2E %>%
+  group_by(Group, Mouse, Dist) %>%
+  summarize(Mean_Conc = mean(roll_Conc, na.rm = TRUE),
+            sd_Conc = sd(roll_Conc, na.rm = TRUE),
+            n_neurons = n(),
+            se_Conc = sd_Conc/sqrt(n_neurons))
+
+
+lineplot <- rollavgdat %>%
+  ggplot(aes(Dist, Mean_Conc)) +
+  geom_line(aes(group = Mouse, color = Group)) +
+  geom_ribbon(aes(ymin = Mean_Conc-se_Conc, 
+                  ymax = Mean_Conc+se_Conc,
+                  group = Mouse, fill = Group), alpha = .3) +
+  scale_fill_manual(values = c("darkblue", "darkorange2")) +
+  scale_color_manual(values = c("darkblue", "darkorange2")) +
+  labs(y = "Rolling Mean AIS Concentration", x = "AIS Length (Microns)") +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size =  12)) +
+  coord_cartesian(xlim = c(0,32))
+
+lineplot
+
+ggsave(lineplot, filename = "Figures/cell_2E_distVintensity.png", width =  6, height = 4)
+```
+
+## Model splines
+
+Splines are a way to fit a non-linear curve to data to understand how the relationship between Distance and Concentration changes for xcTauOs v. Vehicle.
+
+Try basic natural splines model
+
+```{r}
+splinemod <- lmer(Concentration ~ ns(Dist, df = 5) + Group + (1|Mouse) + (1|Experiment), data = Fig2E)
+```
+
+Now try with interaction term
+
+```{r}
+splinemod2 <- lmer(Concentration ~ ns(Dist, df = 5) * Group + (1|Mouse) + (1| Experiment), data = Fig2E)
+```
+
+See if there is a difference in model fit between splinemod and splinemod2
+
+```{r}
+anova(splinemod2, splinemod)
+```
+
+splinemod2 fits better than splinemod, so use that
+
+Interpretation of splinemod2, use emmeans to find average difference
+
+```{r, message=FALSE}
+pairs(emmeans(splinemod2, specs = "Group"))
+```
+
+On average xcTauOs has AIS concentration 8.54 lower than vehicle (p = 0.451)
+
+## Plot splines
+
+```{r}
+splinesplot <- ggpredict(splinemod2, terms = c("Dist [all]", "Group")) %>% 
+  as_tibble() %>%
+  rename(Dist = x,
+         Group = group) %>%
+  ggplot(aes(Dist, predicted, color = Group)) +
+  #facet_wrap(~Group, nrow = 2) +
+  geom_ribbon(aes(ymin = conf.low,
+                  ymax = conf.high,
+                  fill = Group), 
+              alpha = .3,
+              color = NA) +
+  geom_line(lwd = 1.25) +
+  scale_color_manual(values = c("darkblue", "darkorange2")) +
+  scale_fill_manual(values = c("darkblue", "darkorange2")) +
+  labs(x = "AIS Length (Microns)",
+       y = "Predicted AIS Concentration", color = "") +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12)) +
+  coord_cartesian(xlim = c(0,32))
+
+splinesplot
+
+ggsave(splinesplot, filename = "Figures/cell_2E_splines.png", width = 6, height = 4)
+```
+
+## Model mean concentration
+
+Create average intensity dataset. For each neuron, what is the average intensity across the whole distance that was measured
+
+```{r}
+avgint <- Fig2E %>%
+  group_by(Group, Experiment, Mouse, Neuron) %>%
+  summarize(Mean_Conc = mean(Concentration),
+            n = n()) %>%
+  ungroup()
+
+avgint
+```
+
+Model the mean concentration by Group
+
+```{r}
+avgintmodB <- lmer(Mean_Conc ~ Group + (1|Mouse) + (1|Experiment), data = avgint)
+
+summary(avgintmodB)
+```
+
+No difference
+
+## Plot Mean Concentration
+
+Each dot is an average of all of the concentration values for each neuron.
+
+On top of dots are the predicted means and 95% confidence interval from the linear mixed model.
+
+```{r}
+# return dataset of predicted mean +/- 95%CI
+pred_mean_avgintmod <- ggeffect(avgintmodB, terms = c("Group")) %>% 
+  as_tibble() %>%
+  rename(Group = x)
+
+pred_mean_avgintmod
+
+meanint_supp_plot <- avgint %>%
+  ggplot() +
+  geom_jitter(aes(x = Group, 
+                 y = Mean_Conc, 
+                 color = Group), 
+             alpha = .3,
+             width = .3) +
+  geom_point(data = pred_mean_avgintmod, 
+                aes(x = Group, 
+                    y = predicted, 
+                    color = Group),
+                size = 4) +
+  geom_errorbar(data = pred_mean_avgintmod, 
+                aes(x = Group, 
+                    ymin = conf.low, 
+                    ymax = conf.high, 
+                    color = Group),
+                width = .4,
+                lwd = 1) +
+  labs(y = "Mean AIS Concentration", x = "") +
+  scale_color_manual(values =  c("darkblue", "darkorange2")) +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+meanint_supp_plot
+
+ggsave(meanint_supp_plot, filename = "Figures/cell_2E_meanconc.png", width = 6, height = 4)
+```
+
+## Model max concentration
+
+Create max concentration variable
+
+Define the maximum concentration based on the rolling average concentration for each neuron since that worked better for the human data.
+
+```{r}
+maxint <- Fig2E %>%
+  group_by(Group, Experiment, Mouse, Neuron) %>%
+  summarise(Max_Conc = max(roll_Conc, na.rm = TRUE))
+```
+
+Check that each neuron only has one maximum
+
+```{r}
+maxint %>%
+  count(Mouse, Neuron) %>%
+  arrange(-n)
+```
+
+Model the max concentration by Group
+
+```{r}
+maxmod <- lmer(Max_Conc ~ Group + (1|Mouse) + (1|Experiment), data = maxint)
+
+summary(maxmod)
+```
+
+No difference
+
+## Plot Max Concentration
+
+Each dot is the maximum concentration values for each neuron.
+
+On top of dots are the predicted means and 95% confidence interval from the linear mixed model.
+
+```{r}
+# return dataset of predicted mean +/- 95%CI
+pred_max <- ggeffect(maxmod, terms = c("Group")) %>% 
+  as_tibble() %>%
+  rename(Group = x)
+
+pred_max
+
+maxplot <- maxint %>%
+  ggplot() +
+  geom_jitter(aes(x = Group, 
+                 y = Max_Conc, 
+                 color = Group), 
+             alpha = .3,
+             width = .3) +
+  geom_point(data = pred_max, 
+                aes(x = Group, 
+                    y = predicted, 
+                    color = Group),
+                size = 4) +
+  geom_errorbar(data = pred_max, 
+                aes(x = Group, 
+                    ymin = conf.low, 
+                    ymax = conf.high, 
+                    color = Group),
+                width = .4,
+                lwd = 1) +
+  labs(y = "Maximum AIS Concentration", x = "") +
+  scale_color_manual(values =  c("darkblue", "darkorange2")) +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+maxplot
+
+ggsave(maxplot, filename = "Figures/cell_2E_maxconc.png", width = 6, height = 4)
+```
+
+
+## Model min concentration
+
+Create min concentration variable
+
+Define the minimum concentration based on the rolling average concentration for each neuron since that worked better for the human data.
+
+```{r}
+minint <- Fig2E %>%
+  group_by(Group, Experiment, Mouse, Neuron) %>%
+  summarise(Min_Conc = min(roll_Conc, na.rm = TRUE))
+```
+
+Check that each neuron only has one maximum
+
+```{r}
+minint %>%
+  count(Mouse, Neuron) %>%
+  arrange(-n)
+```
+
+Model the min concentration by Group
+
+```{r}
+minmod <- lmer(Min_Conc ~ Group + (1|Mouse) + (1|Experiment), data = minint)
+
+summary(minmod)
+```
+
+No difference
+
+## Plot Min Concentration
+
+Each dot is the minimum concentration values for each neuron.
+
+On top of dots are the predicted means and 95% confidence interval from the linear mixed model.
+
+```{r}
+# return dataset of predicted mean +/- 95%CI
+pred_min <- ggeffect(minmod, terms = c("Group")) %>% 
+  as_tibble() %>%
+  rename(Group = x)
+
+pred_min
+
+minplot <- minint %>%
+  ggplot() +
+  geom_jitter(aes(x = Group, 
+                 y = Min_Conc, 
+                 color = Group), 
+             alpha = .3,
+             width = .3) +
+  geom_point(data = pred_min, 
+                aes(x = Group, 
+                    y = predicted, 
+                    color = Group),
+                size = 4) +
+  geom_errorbar(data = pred_min, 
+                aes(x = Group, 
+                    ymin = conf.low, 
+                    ymax = conf.high, 
+                    color = Group),
+                width = .4,
+                lwd = 1) +
+  labs(y = "Minimum AIS Concentration", x = "") +
+  scale_color_manual(values =  c("darkblue", "darkorange2")) +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+minplot
+
+ggsave(minplot, filename = "Figures/cell_2E_minconc.png", width = 6, height = 4)
+```
+
+# Fig 2F
+
+MAPT-/- (5 independent experiments)
+Is the AIS Length different between treatments?
+
+Write a function that will read the file and clean it
+
+```{r}
+readclean <- function(filename){
+  dat <- read_excel(paste0("Data/Mouse/2F - MAPT--- AIS Length/", filename), skip = 1) %>%
+  dplyr::select(-avg, -std, -count, - `std rror`) %>%
+  mutate(filename = filename) %>%
+  pivot_longer(cols = contains("Neur"), names_to = "Neuron", values_to = "Length")
+}
+```
+
+Create a list of all of the datafiles and then iterate through them to read them all in.
+
+```{r}
+my_files <- list.files(path = "Data/Mouse/2F - MAPT--- AIS Length/")
+
+Fig2F <- map(my_files, ~readclean(.))
+Fig2F <- bind_rows(Fig2F)
+
+Fig2F
+```
+
+Create new variables for Mouse and Group
+
+```{r}
+Fig2F <- Fig2F %>%
+  select(-`Distance_(microns)`) %>%
+  separate(filename, into = c(NA, "Mouse"), sep = "\\- ") %>%
+  separate(Mouse, into = c("Mouse", NA), sep = " = ")
+
+Fig2F
+```
+
+Create treatment group variable
+
+```{r}
+Fig2F <- Fig2F %>%
+  mutate(Group = if_else(str_detect(Mouse,"V"), "Vehicle", "xcTauOs")) %>%
+  select(Group, Mouse, Neuron, Length)
+```
+
+Create Experiment variable
+
+Cells from embryos from one pregnant female were divided into vehicle and xcTauOs so we need to know which pregnant female the cells came from.
+
+```{r}
+Fig2F <- Fig2F %>%
+  mutate(Experiment = case_when(str_detect(Mouse,"1") ~ "A", 
+                                str_detect(Mouse,"2") ~ "B", 
+                                str_detect(Mouse,"3") ~ "C",
+                                str_detect(Mouse,"4") ~ "D",
+                                str_detect(Mouse,"5") ~ "E"))
+
+Fig2F
+```
+
+### Exploratory data analysis
+
+```{r}
+Fig2F %>%
+  ggplot(aes(Group, Length)) +
+  geom_jitter(height = 0) +
+  facet_wrap(~Experiment)
+```
+
+## Model
+
+```{r}
+Fig2Fmod <- lmer(Length ~ Group + (1|Mouse) + (1|Experiment), data = Fig2F)
+summary(Fig2Fmod)
+```
+
+No difference in Length
+
+Mouse does not matter at all, so don't worry about singular fit message.
+
+## Plot
+
+Jitter with 95% CI (like human data)
+- vehicle = blue
+- tau = orange
+
+```{r}
+# return dataset of predicted mean +/- 95%CI
+pred_length <- ggeffect(Fig2Fmod, terms = "Group") %>% 
+  as_tibble() %>%
+  rename(Group = x)
+
+pred_length
+
+lengthplot <- Fig2F %>%
+  ggplot() +
+  geom_jitter(aes(x = Group, 
+                 y = Length, 
+                 color = Group), 
+             alpha = .3,
+             width = .3) +
+  geom_point(data = pred_length, 
+                aes(x = Group, 
+                    y = predicted, 
+                    color = Group),
+                size = 4) +
+  geom_errorbar(data = pred_length, 
+                aes(x = Group, 
+                    ymin = conf.low, 
+                    ymax = conf.high, 
+                    color = Group),
+                width = .4,
+                lwd = 1) +
+  labs(y = "AIS Length \n (Microns)", x = "") +
+  scale_color_manual(values =  c("darkblue", "darkorange2")) +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+lengthplot
+
+ggsave(lengthplot, filename = "Figures/cell_2F.png", width = 6, height = 4)
+```
+
+# Fig 3D
+
+Tau lentivirus and MAPT-/- (4 independent experiments)
+
+Is the Soma-AIS gap different between vehicle and xcTauOs
+
+## Load Data
+
+Write a function that will read the file and clean it
+
+```{r}
+readclean <- function(filename){
+  dat <- read_excel(paste0("Data/Mouse/3D - Tau lentivirus + MAPT--- Soma-AIS Gap/", filename), skip = 1) %>%
+  dplyr::select(-avg, -std, -count, - `std rror`) %>%
+  mutate(filename = filename) %>%
+  pivot_longer(cols = contains("Neur"), names_to = "Neuron", values_to = "Gap")
+}
+```
+
+Create a list of all of the datafiles and then iterate through them to read them all in.
+
+```{r}
+my_files <- list.files(path = "Data/Mouse/3D - Tau lentivirus + MAPT--- Soma-AIS Gap/")
+
+Fig3D <- map(my_files, ~readclean(.))
+Fig3D <- bind_rows(Fig3D)
+
+Fig3D
+```
+
+Create new variables for Mouse and Group
+
+```{r}
+Fig3D <- Fig3D %>%
+  select(-`Distance_(microns)`) %>%
+  separate(filename, into = c(NA, "Mouse"), sep = "\\- ") %>%
+  separate(Mouse, into = c("Mouse", NA), sep = " = ")
+
+Fig3D
+```
+
+Create treatment group variable
+
+```{r}
+Fig3D <- Fig3D %>%
+  mutate(Group = if_else(str_detect(Mouse,"V"), "Vehicle", "xcTauOs")) %>%
+  select(Group, Mouse, Neuron, Gap)
+```
+
+Create Experiment variable
+
+Cells from embryos from one pregnant female were divided into vehicle and xcTauOs so we need to know which pregnant female the cells came from.
+
+```{r}
+Fig3D <- Fig3D %>%
+  mutate(Experiment = case_when(str_detect(Mouse,"1") ~ "A", 
+                                str_detect(Mouse,"2") ~ "B", 
+                                str_detect(Mouse,"3") ~ "C",
+                                str_detect(Mouse,"4") ~ "D"))
+
+Fig3D
+```
+
+### Basic data checks
+
+How many neurons per experiment
+
+```{r}
+Fig3D %>%
+  count(Mouse)
+```
+
+### Exploratory plot
+
+```{r}
+Fig3D %>%
+  ggplot(aes(Group, Gap)) +
+  geom_jitter() +
+  facet_wrap(~Experiment)
+```
+
+## Model
+
+```{r}
+Fig3Dmod <- lmer(Gap ~ Group + (1|Mouse) + (1|Experiment), data = Fig3D)
+summary(Fig3Dmod)
+```
+
+No difference in Gap (p = 0.071)
+
+Mouse removed 0 variance, so don't worry about singular fit message
+
+## Plot
+
+Jitter with 95% CI (like human data)
+- vehicle = blue
+- tau = orange
+
+```{r}
+# return dataset of predicted mean +/- 95%CI
+pred_gap <- ggeffect(Fig3Dmod, terms = "Group") %>% 
+  as_tibble() %>%
+  rename(Group = x)
+
+pred_gap
+
+gapplot <- Fig3D %>%
+  ggplot() +
+  geom_jitter(aes(x = Group, 
+                 y = Gap, 
+                 color = Group), 
+             alpha = .3,
+             width = .3) +
+  geom_point(data = pred_gap, 
+                aes(x = Group, 
+                    y = predicted, 
+                    color = Group),
+                size = 4) +
+  geom_errorbar(data = pred_gap, 
+                aes(x = Group, 
+                    ymin = conf.low, 
+                    ymax = conf.high, 
+                    color = Group),
+                width = .4,
+                lwd = 1) +
+  labs(y = "Soma-AIS Gap \n (Microns)", x = "") +
+  scale_color_manual(values =  c("darkblue", "darkorange2")) +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+gapplot
+
+ggsave(gapplot, filename = "Figures/cell_3D.png", width = 6, height = 4)
+```
+
+# Fig 3E
+
+Lentivirus + MAPT-/- (4 independent experiments)
+
+Is the AIS concentration different between vehicle and xcTauOs
+
+## Load Data
+
+Write a function that will read the file and clean it
+
+```{r}
+readclean <- function(filename){
+  dat <- read_excel(paste0("Data/Mouse/3E - Tau lentivirus + MAPT--- AIS Concentration/", filename), skip = 1) %>%
+  dplyr::select(-avg, -std, -count, - `std rror`) %>%
+  mutate(filename = filename) %>%
+  pivot_longer(cols = contains("Neur"), names_to = "Neuron", values_to = "Concentration")
+}
+```
+
+Create a list of all of the datafiles and then iterate through them to read them all in.
+
+```{r}
+my_files <- list.files(path = "Data/Mouse/3E - Tau lentivirus + MAPT--- AIS Concentration/")
+
+Fig3E <- map(my_files, ~readclean(.))
+Fig3E <- bind_rows(Fig3E)
+
+Fig3E
+```
+
+Create new variables for Mouse and Group
+
+```{r}
+Fig3E <- Fig3E %>%
+  rename(Dist = `Distance_(microns)`) %>%
+  separate(filename, into = c(NA, "Mouse"), sep = "\\- ") %>%
+  separate(Mouse, into = c("Mouse", NA), sep = " = ")
+
+Fig3E
+```
+
+Create treatment group variable
+
+```{r}
+Fig3E <- Fig3E %>%
+  mutate(Group = if_else(str_detect(Mouse,"V"), "Vehicle", "xcTauOs")) %>%
+  select(Group, Mouse, Neuron, Dist, Concentration)
+```
+
+Create Experiment variable
+
+Cells from embryos from one pregnant female were divided into vehicle and xcTauOs so we need to know which pregnant female the cells came from.
+
+```{r}
+Fig3E <- Fig3E %>%
+  mutate(Experiment = case_when(str_detect(Mouse,"1") ~ "A", 
+                                str_detect(Mouse,"2") ~ "B", 
+                                str_detect(Mouse,"3") ~ "C",
+                                str_detect(Mouse,"4") ~ "D"))
+
+Fig3E
+```
+
+### Clean dataset
+
+Drop observations where Concentration is missing because the neuron wasn't that long
+```{r}
+Fig3E <- Fig3E %>%
+  arrange(Group, Experiment, Mouse, Neuron, Dist) %>%
+  drop_na(Concentration)
+```
+
+### Basic data checks
+
+How many neurons per experiment
+
+```{r}
+Fig3E %>%
+  count(Mouse)
+```
+
+### Exploratory plot
+
+- Make rolling average plot
+
+A rolling average across 3-distance observations works nicely to show the trend.
+
+I used the `rollapply()` function rather than the more standard `rollmean()` function because `rollmean()` has no way to remove NAs.
+
+```{r}
+Fig3E <- Fig3E %>%
+  group_by(Mouse, Neuron) %>%
+  mutate(roll_Conc = rollapply(Concentration, 3, mean, na.rm = TRUE, fill = NA)) %>%
+  ungroup()
+
+Fig3E
+```
+
+One line per mouse, rolling average averaged over all neurons at a given dist.
+
+The rolling average is the average of a 3-dist chunk.
+
+```{r}
+rollavgdat <- Fig3E %>%
+  group_by(Group, Experiment, Mouse, Dist) %>%
+  summarize(Mean_Conc = mean(roll_Conc, na.rm = TRUE),
+            sd_Conc = sd(roll_Conc, na.rm = TRUE),
+            n_neurons = n(),
+            se_Conc = sd_Conc/sqrt(n_neurons))
+
+
+lineplot <- rollavgdat %>%
+  ggplot(aes(Dist, Mean_Conc)) +
+  geom_line(aes(group = Mouse, color = Group)) +
+  geom_ribbon(aes(ymin = Mean_Conc-se_Conc, 
+                  ymax = Mean_Conc+se_Conc,
+                  group = Mouse, 
+                  fill = Group), alpha = .3) +
+  scale_fill_manual(values = c("darkblue", "darkorange2")) +
+  scale_color_manual(values = c("darkblue", "darkorange2")) +
+  labs(y = "Rolling Mean AIS Concentration", x = "AIS Length (Microns)") +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size =  12)) +
+  coord_cartesian(xlim = c(0,32))
+
+lineplot
+
+ggsave(lineplot, filename = "Figures/cell_3E_distVintensity.png", width =  6, height = 4)
+```
+
+## Model splines
+
+Splines are a way to fit a non-linear curve to data to understand how the relationship between Distance and Concentration changes for xcTauOs v. Vehicle.
+
+Try basic natural splines model
+
+```{r}
+splinemod <- lmer(Concentration ~ ns(Dist, df = 5) + Group + (1|Mouse) + (1|Experiment), data = Fig3E)
+```
+
+Now try with interaction term
+
+```{r}
+splinemod2 <- lmer(Concentration ~ ns(Dist, df = 5) * Group + (1|Mouse) + (1|Experiment), data = Fig3E)
+```
+
+See if there is a difference in model fit between splinemod and splinemod2
+
+```{r}
+anova(splinemod2, splinemod)
+```
+
+splinemod2 fits better than splinemod, so use that
+
+Interpretation of splinemod2, use emmeans to find average difference
+
+```{r, message=FALSE}
+pairs(emmeans(splinemod2, specs = "Group"))
+```
+
+On average xcTauOs has AIS concentration 20.8 lower than vehicle (p = 0.010)
+
+## Plot splines
+
+```{r}
+splinesplot <- ggpredict(splinemod2, terms = c("Dist [all]", "Group")) %>% 
+  as_tibble() %>%
+  rename(Dist = x,
+         Group = group) %>%
+  ggplot(aes(Dist, predicted, color = Group)) +
+  #facet_wrap(~Group, nrow = 2) +
+  geom_ribbon(aes(ymin = conf.low,
+                  ymax = conf.high,
+                  fill = Group), 
+              alpha = .3,
+              color = NA) +
+  geom_line(lwd = 1.25) +
+  scale_color_manual(values = c("darkblue", "darkorange2")) +
+  scale_fill_manual(values = c("darkblue", "darkorange2")) +
+  labs(x = "AIS Length (Microns)",
+       y = "Predicted AIS Concentration", color = "") +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12)) +
+  coord_cartesian(xlim = c(0,32))
+
+splinesplot
+
+ggsave(splinesplot, filename = "Figures/cell_3E_splines.png", width = 6, height = 4)
+```
+
+## Model mean concentration
+
+Create average intensity dataset. For each neuron, what is the average intensity across the whole distance that was measured
+
+```{r}
+avgint <- Fig3E %>%
+  group_by(Group, Experiment, Mouse, Neuron) %>%
+  summarize(Mean_Conc = mean(Concentration),
+            n = n()) %>%
+  ungroup()
+
+avgint
+```
+
+Model the mean concentration by Group
+
+```{r}
+avgintmodB <- lmer(Mean_Conc ~ Group + (1|Mouse) + (1|Experiment), data = avgint)
+
+summary(avgintmodB)
+```
+
+No difference (p = 0.074)
+
+## Plot Mean Concentration
+
+Each dot is an average of all of the concentration values for each neuron.
+
+On top of dots are the predicted means and 95% confidence interval from the linear mixed model.
+
+```{r}
+# return dataset of predicted mean +/- 95%CI
+pred_mean_avgintmod <- ggeffect(avgintmodB, terms = c("Group")) %>% 
+  as_tibble() %>%
+  rename(Group = x)
+
+pred_mean_avgintmod
+
+meanint_supp_plot <- avgint %>%
+  ggplot() +
+  geom_jitter(aes(x = Group, 
+                 y = Mean_Conc, 
+                 color = Group), 
+             alpha = .3,
+             width = .3) +
+  geom_point(data = pred_mean_avgintmod, 
+                aes(x = Group, 
+                    y = predicted, 
+                    color = Group),
+                size = 4) +
+  geom_errorbar(data = pred_mean_avgintmod, 
+                aes(x = Group, 
+                    ymin = conf.low, 
+                    ymax = conf.high, 
+                    color = Group),
+                width = .4,
+                lwd = 1) +
+  labs(y = "Mean AIS Concentration", x = "") +
+  scale_color_manual(values =  c("darkblue", "darkorange2")) +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+meanint_supp_plot
+
+ggsave(meanint_supp_plot, filename = "Figures/cell_3E_meanconc.png", width = 6, height = 4)
+```
+
+## Model max concentration
+
+Create max concentration variable
+
+Define the maximum concentration based on the rolling average concentration for each neuron since that worked better for the human data.
+
+```{r}
+maxint <- Fig3E %>%
+  group_by(Group, Experiment, Mouse, Neuron) %>%
+  summarise(Max_Conc = max(roll_Conc, na.rm = TRUE))
+```
+
+Check that each neuron only has one maximum
+
+```{r}
+maxint %>%
+  count(Mouse, Neuron) %>%
+  arrange(-n)
+```
+
+Model the max concentration by Group
+
+```{r}
+maxmod <- lmer(Max_Conc ~ Group + (1|Mouse) + (1|Experiment), data = maxint)
+
+summary(maxmod)
+```
+
+xcTauOs is 28.75 lower (p = 0.048)
+
+## Plot Max Concentration
+
+Each dot is the maximum concentration values for each neuron.
+
+On top of dots are the predicted means and 95% confidence interval from the linear mixed model.
+
+```{r}
+# return dataset of predicted mean +/- 95%CI
+pred_max <- ggeffect(maxmod, terms = c("Group")) %>% 
+  as_tibble() %>%
+  rename(Group = x)
+
+pred_max
+
+maxplot <- maxint %>%
+  ggplot() +
+  geom_jitter(aes(x = Group, 
+                 y = Max_Conc, 
+                 color = Group), 
+             alpha = .3,
+             width = .3) +
+  geom_point(data = pred_max, 
+                aes(x = Group, 
+                    y = predicted, 
+                    color = Group),
+                size = 4) +
+  geom_errorbar(data = pred_max, 
+                aes(x = Group, 
+                    ymin = conf.low, 
+                    ymax = conf.high, 
+                    color = Group),
+                width = .4,
+                lwd = 1) +
+  labs(y = "Maximum AIS Concentration", x = "") +
+  scale_color_manual(values =  c("darkblue", "darkorange2")) +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+maxplot
+
+ggsave(maxplot, filename = "Figures/cell_3E_maxconc.png", width = 6, height = 4)
+```
+
+## Model min concentration
+
+Create min concentration variable
+
+Define the minimum concentration based on the rolling average concentration for each neuron since that worked better for the human data.
+
+```{r}
+minint <- Fig3E %>%
+  group_by(Group, Experiment, Mouse, Neuron) %>%
+  summarise(Min_Conc = min(roll_Conc, na.rm = TRUE))
+```
+
+Check that each neuron only has one maximum
+
+```{r}
+minint %>%
+  count(Mouse, Neuron) %>%
+  arrange(-n)
+```
+
+Model the min concentration by Group
+
+```{r}
+minmod <- lmer(Min_Conc ~ Group + (1|Mouse) + (1|Experiment), data = minint)
+
+summary(minmod)
+```
+
+No difference
+
+## Plot Min Concentration
+
+Each dot is the minimum concentration values for each neuron.
+
+On top of dots are the predicted means and 95% confidence interval from the linear mixed model.
+
+```{r}
+# return dataset of predicted mean +/- 95%CI
+pred_min <- ggeffect(minmod, terms = c("Group")) %>% 
+  as_tibble() %>%
+  rename(Group = x)
+
+pred_min
+
+minplot <- minint %>%
+  ggplot() +
+  geom_jitter(aes(x = Group, 
+                 y = Min_Conc, 
+                 color = Group), 
+             alpha = .3,
+             width = .3) +
+  geom_point(data = pred_min, 
+                aes(x = Group, 
+                    y = predicted, 
+                    color = Group),
+                size = 4) +
+  geom_errorbar(data = pred_min, 
+                aes(x = Group, 
+                    ymin = conf.low, 
+                    ymax = conf.high, 
+                    color = Group),
+                width = .4,
+                lwd = 1) +
+  labs(y = "Minimum AIS Concentration", x = "") +
+  scale_color_manual(values =  c("darkblue", "darkorange2")) +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+minplot
+
+ggsave(minplot, filename = "Figures/cell_3E_minconc.png", width = 6, height = 4)
+```
+
+# Fig 3F
+
+Lentivirus + MAPT-/- (4 independent experiments)
+Is the AIS Length different between treatments?
+
+
+## Load Data
+
+Write a function that will read the file and clean it
+
+```{r}
+readclean <- function(filename){
+  dat <- read_excel(paste0("Data/Mouse/3F - Tau lentivirus + MAPT--- AIS Length/", filename), skip = 1) %>%
+  dplyr::select(-avg, -std, -count, - `std rror`) %>%
+  mutate(filename = filename) %>%
+  pivot_longer(cols = contains("Neur"), names_to = "Neuron", values_to = "Length")
+}
+```
+
+Create a list of all of the datafiles and then iterate through them to read them all in.
+
+```{r}
+my_files <- list.files(path = "Data/Mouse/3F - Tau lentivirus + MAPT--- AIS Length/")
+
+Fig3F <- map(my_files, ~readclean(.))
+Fig3F <- bind_rows(Fig3F)
+
+Fig3F
+```
+
+Create new variables for Mouse and Group
+
+```{r}
+Fig3F <- Fig3F %>%
+  select(-`Distance_(microns)`) %>%
+  separate(filename, into = c(NA, "Mouse"), sep = "\\- ") %>%
+  separate(Mouse, into = c("Mouse", NA), sep = " = ")
+
+Fig3F
+```
+
+Create treatment group variable
+
+```{r}
+Fig3F <- Fig3F %>%
+  mutate(Group = if_else(str_detect(Mouse,"V"), "Vehicle", "xcTauOs")) %>%
+  select(Group, Mouse, Neuron, Length)
+```
+
+Create Experiment variable
+
+Cells from embryos from one pregnant female were divided into vehicle and xcTauOs so we need to know which pregnant female the cells came from.
+
+```{r}
+Fig3F <- Fig3F %>%
+  mutate(Experiment = case_when(str_detect(Mouse,"1") ~ "A", 
+                                str_detect(Mouse,"2") ~ "B", 
+                                str_detect(Mouse,"3") ~ "C",
+                                str_detect(Mouse,"4") ~ "D"))
+
+Fig3F
+```
+
+### Exploratory data analysis
+
+```{r}
+Fig3F %>%
+  ggplot(aes(Group, Length)) +
+  geom_jitter(height = 0) +
+  facet_wrap(~Experiment)
+```
+
+We can see the difference
+
+## Model
+
+```{r}
+Fig3Fmod <- lmer(Length ~ Group + (1|Mouse) + (1|Experiment), data = Fig3F)
+summary(Fig3Fmod)
+```
+
+xcTauOs has AIS 5.48 microns shorter than Vehicle (p = 5.67e-11)
+
+Mouse removes zero variance, so don't worry about the singular fit.
+
+## Plot
+
+Jitter with 95% CI (like human data)
+- vehicle = blue
+- tau = orange
+
+```{r}
+# return dataset of predicted mean +/- 95%CI
+pred_length <- ggeffect(Fig3Fmod, terms = "Group") %>% 
+  as_tibble() %>%
+  rename(Group = x)
+
+pred_length
+
+lengthplot <- Fig3F %>%
+  ggplot() +
+  geom_jitter(aes(x = Group, 
+                 y = Length, 
+                 color = Group), 
+             alpha = .3,
+             width = .3) +
+  geom_point(data = pred_length, 
+                aes(x = Group, 
+                    y = predicted, 
+                    color = Group),
+                size = 4) +
+  geom_errorbar(data = pred_length, 
+                aes(x = Group, 
+                    ymin = conf.low, 
+                    ymax = conf.high, 
+                    color = Group),
+                width = .4,
+                lwd = 1) +
+  labs(y = "AIS Length \n (Microns)", x = "") +
+  scale_color_manual(values =  c("darkblue", "darkorange2")) +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+lengthplot
+
+ggsave(lengthplot, filename = "Figures/cell_3F.png", width = 6, height = 4)
+```
